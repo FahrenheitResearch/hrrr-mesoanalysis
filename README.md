@@ -1,78 +1,33 @@
-# HRRR Mesoanalysis
+# hrrr-mesoanalysis
 
-High-resolution mesoscale analysis system that blends real surface observations into HRRR model data using Barnes objective analysis, then computes a full suite of severe weather parameters via [metrust](https://github.com/FahrenheitResearch/metrust-py).
-
-This is similar to what the [SPC Mesoanalysis](https://www.spc.noaa.gov/exper/mesoanalysis/) does, but at **3km HRRR resolution** instead of 13km RAP — roughly 19x more grid columns.
-
-## What it does
-
-1. **Loads HRRR** surface + 22 pressure levels via [Herbie](https://github.com/blaylockbk/Herbie)
-2. **Fetches ~1,700 ASOS observations** from the Iowa Environmental Mesonet
-3. **Quality controls** observations against the HRRR first guess (range + gross error checks)
-4. **Barnes objective analysis** blends obs into the model grid (multi-pass, Gaussian-weighted)
-5. **Computes parameters** using metrust's Rust engine at full HRRR resolution (~1.9M grid points)
-6. **Renders CONUS maps** for all parameters
-
-## Output fields
-
-| Category | Parameters |
-|---|---|
-| Thermodynamic | SBCAPE, SBCIN, MLCAPE, MUCAPE, SB3CAPE, LCL, Theta-e (sfc/850), Wet Bulb, Lapse Rates, Mixing Ratio, PW |
-| Kinematic | 0-1/3/6km Bulk Shear, 0-1/3km SRH |
-| Composite | Significant Tornado Parameter (STP), Supercell Composite (SCP) |
-| Surface | 2m Temperature, 2m Dewpoint |
-
-## Quick start
+SPC-style mesoscale analysis at 3km HRRR resolution. Blends real ASOS surface obs into the HRRR grid via Barnes objective analysis, then runs a full severe weather parameter suite using [metrust](https://github.com/FahrenheitResearch/metrust-py).
 
 ```bash
 pip install metrust herbie-data cartopy scipy matplotlib requests
-git clone https://github.com/FahrenheitResearch/hrrr-mesoanalysis.git
-cd hrrr-mesoanalysis
-
-# Run for any HRRR analysis time
 python -m mesoanalysis 2025-05-10T18:00
 ```
 
-Output PNGs land in `output/YYYYMMDD_HHMM/`.
+PNGs go to `output/YYYYMMDD_HHMM/`.
 
-## Why metrust
+## How it works
 
-Computing SBCAPE across 1.9M HRRR columns with 22 pressure levels takes **~400ms** with metrust vs an estimated **~70 minutes** with MetPy. SRH is even more dramatic: 19ms vs 30+ minutes. This makes full-resolution mesoanalysis practical as a near-real-time product.
+Fetches HRRR surface + 22 pressure levels through [Herbie](https://github.com/blaylockbk/Herbie), pulls ~1,700 ASOS obs from the Iowa Environmental Mesonet, QC's them against the HRRR first guess, then runs a multi-pass Barnes analysis to nudge the model grid toward observed values. The corrected fields feed into metrust for parameter computation across the full 1799x1059 HRRR grid.
 
-## Configuration
+The [SPC Mesoanalysis](https://www.spc.noaa.gov/exper/mesoanalysis/) does roughly the same thing but on the 13km RAP. This runs on the 3km HRRR — about 19x more grid columns — which is only feasible because metrust handles the compute. SBCAPE over 1.9M columns with 22 levels runs in ~400ms. With MetPy that's closer to an hour.
 
-Edit `mesoanalysis/config.py` to tune:
+## Parameters
 
-- **Domain**: CONUS extent, map projection
-- **Barnes**: `kappa` (smoothing scale), `gamma` (convergence), `passes`
-- **Obs**: time window for observation matching
-- **Output**: figure size, DPI
+**Thermodynamic** — SBCAPE, SBCIN, MLCAPE, MUCAPE, SB3CAPE, LCL, theta-e (sfc + 850mb), wet bulb, 700-500mb lapse rate, mixing ratio, precipitable water
 
-## Architecture
+**Kinematic** — 0-1km, 0-3km, 0-6km bulk shear; 0-1km and 0-3km SRH
 
-```
-mesoanalysis/
-  config.py          # Central configuration
-  pipeline.py        # Orchestrator (run all 8 steps)
-  __main__.py        # CLI entry point
-  hrrr/
-    ingest.py        # HRRR data loading via Herbie
-  obs/
-    fetch.py         # IEM ASOS observation fetching
-    models.py        # SurfaceObs / ObsCollection dataclasses
-    qc.py            # Range + gross error quality control
-  analysis/
-    barnes.py        # Multi-pass Barnes objective analysis
-    fields.py        # Merge analyzed fields back into HRRR
-  params/
-    thermodynamic.py # CAPE, theta-e, wet bulb, lapse rates, PW
-    kinematic.py     # Bulk shear, SRH
-    composite.py     # STP, SCP
-  plotting/
-    maps.py          # Map factory (Lambert Conformal)
-    styles.py        # Color scales and contour levels
-    render.py        # Rendering engine
-```
+**Composite** — STP, SCP
+
+**Surface** — 2m temp, 2m dewpoint
+
+## Config
+
+`mesoanalysis/config.py` has the Barnes tuning (kappa, gamma, passes), domain extent, obs time window, and output settings.
 
 ## License
 
