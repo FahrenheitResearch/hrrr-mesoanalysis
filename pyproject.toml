@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-    "metrust>=0.1.5",
+    "metrust>=0.3.5",
     "numpy>=1.24",
     "scipy>=1.10",
     "herbie-data>=2024.1",

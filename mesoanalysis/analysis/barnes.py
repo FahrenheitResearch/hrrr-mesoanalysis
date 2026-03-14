@@ -4,6 +4,9 @@ Multi-pass Barnes objective analysis.
 Blends surface observations into HRRR background fields using a
 successive-correction scheme with Gaussian distance weighting.
 
+Uses metrust's Rust-native inverse_distance_to_points (kind=1, Barnes)
+for the heavy lifting.
+
 References
 ----------
 Barnes, S. L., 1964: A technique for maximizing details in numerical
@@ -17,14 +20,10 @@ from typing import Optional
 
 import cartopy.crs as ccrs
 import numpy as np
-from scipy.spatial import cKDTree
 
 from mesoanalysis.config import DOMAIN
 
 logger = logging.getLogger(__name__)
-
-# Grid-point chunk size for batched KDTree queries (limits peak memory).
-_CHUNK_SIZE = 200_000
 
 
 def _project_coords(
@@ -32,20 +31,7 @@ def _project_coords(
     lons: np.ndarray,
     proj: ccrs.Projection,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Project geographic coordinates to *proj* x/y (metres).
-
-    Parameters
-    ----------
-    lats, lons : array-like
-        Latitude / longitude arrays (any shape).
-    proj : cartopy CRS
-        Target projected coordinate system.
-
-    Returns
-    -------
-    x, y : np.ndarray
-        Projected coordinates (same shape as input).
-    """
+    """Project geographic coordinates to *proj* x/y (metres)."""
     lats = np.asarray(lats, dtype=np.float64)
     lons = np.asarray(lons, dtype=np.float64)
     original_shape = lats.shape
@@ -54,100 +40,25 @@ def _project_coords(
         ccrs.PlateCarree(),
         lons.ravel(),
         lats.ravel(),
-    )  # shape (N, 3) — columns are x, y, z
+    )
 
     x = pts[:, 0].reshape(original_shape)
     y = pts[:, 1].reshape(original_shape)
     return x, y
 
 
-def _interpolate_background_to_obs(
-    grid_x: np.ndarray,
-    grid_y: np.ndarray,
-    background: np.ndarray,
-    obs_x: np.ndarray,
-    obs_y: np.ndarray,
-) -> np.ndarray:
-    """Bilinearly interpolate *background* to observation locations.
-
-    Uses scipy's RegularGridInterpolator when the grid is regular, but
-    for curvilinear HRRR grids we fall back to nearest-neighbour via a
-    KDTree lookup (much faster than true bilinear on an unstructured
-    grid and sufficient for innovation computation).
-    """
-    from scipy.interpolate import griddata
-
-    ny, nx = background.shape
-    pts_grid = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-    vals = background.ravel()
-
-    # Use linear griddata; fall back to nearest for any NaNs.
-    result = griddata(pts_grid, vals, (obs_x, obs_y), method="linear")
-
-    # Fill any NaN (extrapolation) with nearest-neighbour.
-    nans = np.isnan(result)
-    if nans.any():
-        nearest = griddata(pts_grid, vals, (obs_x[nans], obs_y[nans]), method="nearest")
-        result[nans] = nearest
-
-    return result
+def _build_grid_tree(grid_x, grid_y):
+    """Build a KDTree from grid coordinates (once, reuse across passes)."""
+    from scipy.spatial import cKDTree
+    pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+    return cKDTree(pts)
 
 
-def _single_pass(
-    grid_xy: np.ndarray,
-    tree: cKDTree,
-    innovations: np.ndarray,
-    background: np.ndarray,
-    kappa: float,
-    cutoff: float,
-) -> np.ndarray:
-    """Apply one Barnes correction pass over the entire grid.
-
-    Parameters
-    ----------
-    grid_xy : ndarray, shape (M, 2)
-        Flattened grid point positions in projected metres.
-    tree : cKDTree
-        KDTree built from station projected positions.
-    innovations : ndarray, shape (n_obs,)
-        obs - first_guess differences.
-    background : ndarray, shape (M,)
-        Flattened field to correct.
-    kappa : float
-        Smoothing parameter for this pass (m^2).
-    cutoff : float
-        Search radius (metres).
-
-    Returns
-    -------
-    analyzed : ndarray, shape (M,)
-        Corrected field.
-    """
-    n_grid = grid_xy.shape[0]
-    correction = np.zeros(n_grid, dtype=np.float64)
-    four_kappa = 4.0 * kappa
-
-    for start in range(0, n_grid, _CHUNK_SIZE):
-        end = min(start + _CHUNK_SIZE, n_grid)
-        chunk_xy = grid_xy[start:end]
-
-        # For each grid point in the chunk, find stations within cutoff.
-        neighbours = tree.query_ball_point(chunk_xy, r=cutoff)
-
-        for j, nb_idx in enumerate(neighbours):
-            if len(nb_idx) == 0:
-                continue
-            nb_idx = np.asarray(nb_idx)
-            # Distance from this grid point to each neighbour station.
-            dx = chunk_xy[j, 0] - tree.data[nb_idx, 0]
-            dy = chunk_xy[j, 1] - tree.data[nb_idx, 1]
-            r2 = dx * dx + dy * dy
-            weights = np.exp(-r2 / four_kappa)
-            w_sum = weights.sum()
-            if w_sum > 0.0:
-                correction[start + j] = np.dot(weights, innovations[nb_idx]) / w_sum
-
-    return background + correction
+def _interpolate_background_to_obs(tree, background_flat, obs_x, obs_y):
+    """Nearest-neighbor interpolation of background to obs locations via KDTree."""
+    obs_pts = np.column_stack([obs_x, obs_y])
+    _, idx = tree.query(obs_pts)
+    return background_flat[idx]
 
 
 def barnes_analysis(
@@ -165,38 +76,29 @@ def barnes_analysis(
     """Multi-pass Barnes objective analysis.
 
     Blends point observations into a gridded background (e.g. HRRR)
-    using successive Gaussian-weighted correction passes.
+    using successive Gaussian-weighted correction passes. The core
+    Barnes interpolation is done via metrust's Rust engine.
 
     Parameters
     ----------
-    grid_lats : ndarray, shape (ny, nx)
-        Grid latitude values (degrees N).
-    grid_lons : ndarray, shape (ny, nx)
-        Grid longitude values (degrees E).
+    grid_lats, grid_lons : ndarray, shape (ny, nx)
     background : ndarray, shape (ny, nx)
-        Background (first-guess) gridded field.
-    obs_lats : ndarray, shape (n_obs,)
-        Observation latitudes.
-    obs_lons : ndarray, shape (n_obs,)
-        Observation longitudes.
+    obs_lats, obs_lons : ndarray, shape (n_obs,)
     obs_values : ndarray, shape (n_obs,)
-        Observed values (same units / variable as *background*).
     kappa : float
-        First-pass smoothing parameter (m^2).  Default tuned for ~90 km
-        average station spacing.
+        First-pass smoothing parameter (m^2).
     gamma : float
         Convergence factor; second-pass kappa is ``gamma * kappa``.
     passes : int
         Number of successive-correction passes (typically 2).
     projection : cartopy CRS, optional
-        Map projection for distance calculations.  Defaults to the
-        domain LambertConformal from ``config.DOMAIN``.
 
     Returns
     -------
     analyzed : ndarray, shape (ny, nx)
-        The analyzed field.
     """
+    from metrust._metrust import interpolate as _interp
+
     ny, nx = background.shape
     n_obs = len(obs_values)
     logger.info(
@@ -208,51 +110,54 @@ def barnes_analysis(
         logger.warning("No observations provided; returning background unchanged.")
         return background.copy()
 
-    # -- projection setup ----------------------------------------------------
     if projection is None:
         projection = DOMAIN.projection
 
     grid_x, grid_y = _project_coords(grid_lats, grid_lons, projection)
     obs_x, obs_y = _project_coords(obs_lats, obs_lons, projection)
 
-    # -- build KDTree from station positions ---------------------------------
-    station_xy = np.column_stack([obs_x.ravel(), obs_y.ravel()])
-    tree = cKDTree(station_xy)
-
-    # -- flatten grid for vectorised processing ------------------------------
-    grid_xy = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-    bg_flat = background.ravel().astype(np.float64)
-
-    # -- first pass ----------------------------------------------------------
-    first_guess = _interpolate_background_to_obs(
-        grid_x, grid_y, background, obs_x, obs_y,
-    )
-    innovations = obs_values - first_guess
-    logger.debug(
-        "Pass 1 innovations: mean=%.3f, std=%.3f", innovations.mean(), innovations.std(),
-    )
+    obs_x_flat = obs_x.ravel().astype(np.float64)
+    obs_y_flat = obs_y.ravel().astype(np.float64)
+    grid_x_flat = grid_x.ravel().astype(np.float64)
+    grid_y_flat = grid_y.ravel().astype(np.float64)
 
     cutoff = 4.0 * np.sqrt(kappa)
-    analyzed_flat = _single_pass(grid_xy, tree, innovations, bg_flat, kappa, cutoff)
+    bg_flat = background.ravel().astype(np.float64)
 
-    # -- subsequent passes ---------------------------------------------------
+    # Build KDTree once for grid-to-obs interpolation
+    grid_tree = _build_grid_tree(grid_x, grid_y)
+
+    # First pass: compute innovations and Barnes-interpolate to grid
+    first_guess = _interpolate_background_to_obs(
+        grid_tree, bg_flat, obs_x_flat, obs_y_flat,
+    )
+    innovations = (obs_values - first_guess).astype(np.float64)
+
+    correction = np.asarray(_interp.inverse_distance_to_points(
+        obs_x_flat, obs_y_flat, innovations,
+        grid_x_flat, grid_y_flat,
+        cutoff, 1, 1, kappa, gamma,
+    ))
+    correction = np.nan_to_num(correction, nan=0.0)
+    analyzed_flat = bg_flat + correction
+
+    # Subsequent passes
     current_kappa = kappa
     for p in range(2, passes + 1):
         current_kappa = gamma * current_kappa
         current_cutoff = 4.0 * np.sqrt(current_kappa)
 
-        # Recompute innovations from latest analysis.
         analysis_at_obs = _interpolate_background_to_obs(
-            grid_x, grid_y, analyzed_flat.reshape(ny, nx), obs_x, obs_y,
+            grid_tree, analyzed_flat, obs_x_flat, obs_y_flat,
         )
-        innovations = obs_values - analysis_at_obs
-        logger.debug(
-            "Pass %d innovations: mean=%.3f, std=%.3f",
-            p, innovations.mean(), innovations.std(),
-        )
+        innovations = (obs_values - analysis_at_obs).astype(np.float64)
 
-        analyzed_flat = _single_pass(
-            grid_xy, tree, innovations, analyzed_flat, current_kappa, current_cutoff,
-        )
+        correction = np.asarray(_interp.inverse_distance_to_points(
+            obs_x_flat, obs_y_flat, innovations,
+            grid_x_flat, grid_y_flat,
+            current_cutoff, 1, 1, current_kappa, gamma,
+        ))
+        correction = np.nan_to_num(correction, nan=0.0)
+        analyzed_flat = analyzed_flat + correction
 
     return analyzed_flat.reshape(ny, nx)
