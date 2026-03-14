@@ -51,11 +51,8 @@ extrapolated = dt_loop / n_test * ny * nx
 print(f"\nPer-column loop: {n_test:,} in {dt_loop*1000:.0f} ms ({per_col_us:.1f} us/col)")
 print(f"  Extrapolated full grid: {extrapolated:.1f}s")
 
-# Diamond's reference: 16k points in 30 min
-diamond_us = 112_000
-speedup_native_vs_diamond = diamond_us / (dt_native / (ny*nx) * 1e6)
-
 srh_2d = srh.reshape(ny, nx)
+speedup_grid_vs_loop = extrapolated / dt_native
 
 results = f"""SRH Benchmark
 {'='*45}
@@ -63,9 +60,7 @@ Grid: {ny}x{nx} = {ny*nx:,} columns, {nz} levels
 
 Grid-native (Rust):   {dt_native*1000:.1f} ms for {ny*nx:,} columns
 Per-column loop:      {dt_loop*1000:.0f} ms for {n_test:,} columns -> {extrapolated:.1f}s full grid
-Diamond's reference:  30 min for 16k columns
-
-Speedup (native vs Diamond): ~{speedup_native_vs_diamond:,.0f}x
+Speedup (grid-native vs per-column): {speedup_grid_vs_loop:.0f}x
 Max SRH: {np.nanmax(srh_2d):.0f} m^2/s^2
 """
 print(results)
