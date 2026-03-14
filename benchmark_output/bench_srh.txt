@@ -1,0 +1,10 @@
+SRH Benchmark
+=============================================
+Grid: 1059x1799 = 1,905,141 columns, 22 levels
+
+Grid-native (Rust):   39.5 ms for 1,905,141 columns
+Per-column loop:      123 ms for 16,000 columns -> 14.7s full grid
+Diamond's reference:  30 min for 16k columns
+
+Speedup (native vs Diamond): ~5,400,653x
+Max SRH: 404 m^2/s^2

@@ -1,0 +1,11 @@
+CAPE Benchmark: MetPy vs metrust
+=============================================
+Test: 1000 synthetic sounding columns, 5 levels
+
+metrust: 12.3 ms  (12.3 us/col)
+MetPy:   3613.7 ms  (3613.7 us/col)
+Speedup: 294x
+
+Extrapolated to 1,905,141 HRRR columns:
+  metrust: 23.4s
+  MetPy:   6885s (115 min)

@@ -1,0 +1,15 @@
+SB3CAPE Grid Benchmark
+=============================================
+Grid: 1059x1799 = 1,905,141 columns, 22 levels
+
+metrust grid-native timings (avg of 3 runs):
+  SBCAPE:  923ms   max=1331 J/kg
+  SB3CAPE: 935ms   max=1267 J/kg
+  MLCAPE:  920ms
+  MUCAPE:  948ms
+
+MetPy extrapolated (from per-column benchmark):
+  ~117 min for 1,905,141 columns
+
+Speedup (SB3CAPE): ~7,540x
+Points with SB3CAPE > 50 J/kg: 909,315
