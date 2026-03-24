@@ -130,4 +130,123 @@ STYLES = {
         "nws_radar": True,
         "label": "Composite Reflectivity (dBZ)",
     },
+    # --- Stability Indices ---
+    "k_index": {
+        "levels": [15, 20, 25, 30, 35, 40],
+        "cmap": "YlOrRd",
+        "label": "K-Index",
+        "extend": "both",
+    },
+    "total_totals": {
+        "levels": [40, 44, 48, 50, 52, 55, 60],
+        "cmap": "YlOrRd",
+        "label": "Total Totals Index",
+        "extend": "both",
+    },
+    "lifted_index": {
+        "levels": [-10, -8, -6, -4, -2, 0, 2, 4, 6],
+        "cmap": "RdYlBu",
+        "label": "Lifted Index (\u00b0C)",
+        "extend": "both",
+    },
+    "boyden": {
+        "levels": [90, 92, 94, 95, 96, 97, 98, 100],
+        "cmap": "OrRd",
+        "label": "Boyden Index",
+        "extend": "both",
+    },
+    "sweat": {
+        "levels": [100, 150, 200, 250, 300, 400, 500, 600],
+        "cmap": "YlOrRd",
+        "label": "SWEAT Index",
+        "extend": "max",
+    },
+    # --- Surface Parameters ---
+    "heat_index": {
+        "levels_range": (80, 130, 5),
+        "cmap": "YlOrRd",
+        "label": "Heat Index (\u00b0F)",
+        "extend": "max",
+    },
+    "windchill": {
+        "levels_range": (-50, 40, 5),
+        "cmap": "BuPu_r",
+        "label": "Wind Chill (\u00b0F)",
+        "extend": "both",
+    },
+    "ffwi": {
+        "levels": [10, 20, 30, 40, 50, 60, 70, 80, 100],
+        "cmap": "YlOrRd",
+        "label": "Fosberg Fire Weather Index",
+        "extend": "max",
+    },
+    "hdw": {
+        "levels": [50, 100, 200, 400, 600, 800, 1000, 1500],
+        "cmap": "YlOrRd",
+        "label": "Hot-Dry-Windy Index",
+        "extend": "max",
+    },
+    "wbgt": {
+        "levels_range": (70, 110, 2),
+        "cmap": "YlOrRd",
+        "label": "WBGT (\u00b0F)",
+        "extend": "both",
+    },
+    # --- Additional Composites ---
+    "ehi": {
+        "levels": [0.5, 1, 2, 3, 5, 8, 12],
+        "cmap": "OrRd",
+        "label": "Energy-Helicity Index",
+        "extend": "max",
+    },
+    "ship": {
+        "levels": [0.5, 1, 1.5, 2, 3, 4, 5],
+        "cmap_colors": [
+            "#ffffb2",
+            "#fecc5c",
+            "#fd8d3c",
+            "#f03b20",
+            "#bd0026",
+            "#67000d",
+        ],
+        "label": "Sig Hail Parameter",
+        "extend": "max",
+    },
+    "dcape": {
+        "levels": [200, 400, 600, 800, 1000, 1500, 2000],
+        "cmap": "BuPu",
+        "label": "DCAPE (J/kg)",
+        "extend": "max",
+    },
+    "dcp": {
+        "levels": [0.5, 1, 2, 3, 4, 6, 8],
+        "cmap": "YlOrRd",
+        "label": "Derecho Composite Parameter",
+        "extend": "max",
+    },
+    "scp_enhanced": {
+        "levels": [1, 2, 4, 6, 8, 10, 15, 20],
+        "cmap": "OrRd",
+        "label": "Enhanced Supercell Composite",
+        "extend": "max",
+    },
+    "critical_angle": {
+        "levels": [30, 45, 60, 70, 80, 90, 100, 110, 120],
+        "cmap": "RdYlBu_r",
+        "label": "Critical Angle (\u00b0)",
+        "extend": "both",
+    },
+    # --- Kinematic (additional) ---
+    "shear_03km": {
+        "levels": [5, 10, 15, 20, 25, 30, 35, 40, 50],
+        "cmap": "plasma",
+        "label": "0-3km Shear (kt)",
+        "extend": "max",
+    },
+    "lr_850_500": {
+        "levels_range": (4, 10, 0.5),
+        "cmap": "Reds",
+        "label": "850-500mb Lapse Rate (\u00b0C/km)",
+        "extend": "max",
+    },
 }

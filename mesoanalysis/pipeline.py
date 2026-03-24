@@ -31,18 +31,18 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
     print(f"=== Mesoanalysis for {analysis_time} ({model_name}) ===")
 
     # 1. Load model data
-    print(f"\n[1/8] Loading {model_name} data ...")
+    print(f"\n[1/9] Loading {model_name} data ...")
     from .ingest import load_model
     model_data = load_model(analysis_time, model=model, fxx=fxx)
 
     # 2. Fetch observations (multi-source: ASOS + mesonets + NWS + NDBC + CWOP)
-    print("[2/8] Fetching surface observations (multi-source) ...")
+    print("[2/9] Fetching surface observations (multi-source) ...")
     from .obs.fetch_multi import fetch_all_surface_obs
     obs = fetch_all_surface_obs(analysis_time, window_minutes=20)
     print(f"       {len(obs)} observations fetched (multi-source)")
 
     # 3. QC observations against model background
-    print("[3/8] Quality-controlling observations ...")
+    print("[3/9] Quality-controlling observations ...")
     from .obs.qc import qc_obs, ModelFirstGuess
 
     # Convert units for QC: ModelData stores K and Pa
@@ -69,7 +69,7 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
 
     # 4. Barnes objective analysis -- one call per surface field
     #    T, Td, u, v use ALL obs; mslp uses only obs with valid pressure
-    print("[4/8] Running Barnes objective analysis ...")
+    print("[4/9] Running Barnes objective analysis ...")
     from .analysis.barnes import barnes_analysis
 
     obs_lats = obs_qc.lats
@@ -115,20 +115,30 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
     print("       mslp done")
 
     # 5. Merge analyzed surface into model data
-    print(f"[5/8] Merging analysis into {model_name} grid ...")
+    print(f"[5/9] Merging analysis into {model_name} grid ...")
     from .analysis.fields import merge_analysis
     merged = merge_analysis(
         model_data, analyzed_t2m, analyzed_td2m, analyzed_u10, analyzed_v10, analyzed_mslp,
     )
 
     # 6. Compute parameters
-    print("[6/8] Computing thermodynamic parameters ...")
+    print("[6/9] Computing thermodynamic parameters ...")
     from .params.thermodynamic import (
         compute_cape_fields, compute_theta_e, compute_wet_bulb,
         compute_lapse_rates, compute_mixing_ratio, compute_pw,
     )
-    from .params.kinematic import compute_shear_fields, compute_srh_fields
-    from .params.composite import compute_composite_fields
+    from .params.kinematic import (
+        compute_shear_fields, compute_srh_fields, compute_bunkers_storm_motion,
+    )
+    from .params.composite import (
+        compute_composite_fields, compute_ehi, compute_ship, compute_dcape,
+        compute_dcp, compute_enhanced_scp, compute_critical_angle,
+    )
+    from .params.indices import compute_stability_indices, compute_lifted_index
+    from .params.surface import (
+        compute_heat_index, compute_windchill, compute_fosberg_ffwi,
+        compute_hot_dry_windy, compute_wbgt,
+    )
 
     thermo = {}
     thermo.update(compute_cape_fields(merged))
@@ -138,31 +148,78 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
     thermo.update(compute_mixing_ratio(merged))
     thermo.update(compute_pw(merged))
 
-    print("[7/8] Computing kinematic & composite parameters ...")
+    print("[7/9] Computing kinematic & composite parameters ...")
     kinematic = {}
     kinematic.update(compute_shear_fields(merged))
     kinematic.update(compute_srh_fields(merged))
+
+    # Bunkers storm motion (column-by-column, may be slow on full grid)
+    print("       Computing Bunkers storm motion ...")
+    kinematic.update(compute_bunkers_storm_motion(merged))
+
+    # Basic composites (STP, SCP)
     composites = compute_composite_fields(merged, thermo, kinematic)
+
+    # EHI
+    composites.update(compute_ehi(thermo, kinematic))
+
+    # SHIP
+    print("       Computing SHIP ...")
+    composites.update(compute_ship(merged, thermo, kinematic))
+
+    # Enhanced SCP
+    print("       Computing enhanced SCP ...")
+    composites.update(compute_enhanced_scp(merged, thermo, kinematic))
+
+    # DCAPE (column-by-column)
+    print("       Computing DCAPE ...")
+    dcape_result = compute_dcape(merged)
+    composites.update(dcape_result)
+
+    # DCP (needs DCAPE)
+    print("       Computing DCP ...")
+    composites.update(compute_dcp(merged, thermo, kinematic, dcape_result["dcape"]))
+
+    # Critical angle (needs Bunkers)
+    print("       Computing critical angle ...")
+    composites.update(compute_critical_angle(merged, kinematic))
+
+    # Stability indices (K-Index, Total Totals, Boyden, SWEAT)
+    print("       Computing stability indices ...")
+    composites.update(compute_stability_indices(merged))
+
+    # Lifted Index (column-by-column)
+    print("       Computing lifted index ...")
+    composites.update(compute_lifted_index(merged))
+
+    print("[8/9] Computing surface parameters ...")
+    surface = {}
+    surface.update(compute_heat_index(merged))
+    surface.update(compute_windchill(merged))
+    surface.update(compute_fosberg_ffwi(merged))
+    surface.update(compute_hot_dry_windy(merged))
+    surface.update(compute_wbgt(merged))
 
     # 7. Build full params dict for plotting
     params = {}
     params.update(thermo)
     params.update(kinematic)
     params.update(composites)
+    params.update(surface)
 
     # Add surface fields
     params["t2m_f"] = (merged.t2m_K - 273.15) * 9 / 5 + 32
     params["td2m_f"] = (merged.td2m_K - 273.15) * 9 / 5 + 32
 
     # 8. Render static maps (matplotlib PNGs)
-    print("[8/9] Rendering static maps ...")
+    print("[9/10] Rendering static maps ...")
     from .plotting.render import render_all
 
     render_all(merged.lon, merged.lat, params, analysis_time, output_dir,
                model_name=model_name)
 
     # 9. Export web overlays (transparent PNGs + manifest + grids)
-    print("[9/9] Exporting web overlays ...")
+    print("[10/10] Exporting web overlays ...")
     from .output.export import export_web_overlays
 
     export_web_overlays(

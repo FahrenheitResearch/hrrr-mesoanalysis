@@ -183,6 +183,28 @@ def _load_separate_products(
         )
         cape_sfc = np.zeros((ny, nx), dtype=np.float64)
 
+    # Downward shortwave radiation (for WBGT)
+    dswrf_wm2 = None
+    try:
+        ds_dswrf = _H(cfg.sfc_product).xarray(":DSWRF:surface")
+        dswrf_wm2 = _first_var(ds_dswrf).astype(np.float64)
+    except Exception:
+        logger.warning(
+            "%s: DSWRF:surface not available, WBGT will not be computed.",
+            model.upper(),
+        )
+
+    # Total cloud cover
+    tcdc_pct = None
+    try:
+        ds_tcdc = _H(cfg.sfc_product).xarray(":TCDC:entire atmosphere")
+        tcdc_pct = _first_var(ds_tcdc).astype(np.float64)
+    except Exception:
+        logger.warning(
+            "%s: TCDC:entire atmosphere not available.",
+            model.upper(),
+        )
+
     logger.info("Surface fields loaded  (%d x %d)", ny, nx)
 
     # ---- Pressure-level fields --------------------------------------------
@@ -235,6 +257,7 @@ def _load_separate_products(
         refc_dbz=refc_dbz, cape_sfc=cape_sfc,
         t_C=t_C, q_kgkg=q_kgkg, h_agl_m=h_agl_m, p_Pa=p_Pa,
         u=u_3d, v=v_3d,
+        dswrf_wm2=dswrf_wm2, tcdc_pct=tcdc_pct,
         levels_mb=list(levels), date=None, fxx=fxx,
         model=model, resolution_km=cfg.resolution_km,
     )
@@ -260,6 +283,8 @@ def _build_sfc_search(cfg: ModelConfig) -> str:
         cfg.mslp_search,
         cfg.refc_search,
         ":CAPE:surface",
+        ":DSWRF:surface",
+        ":TCDC:entire atmosphere",
     ]
     return "(" + "|".join(parts) + ")"
 
@@ -361,6 +386,24 @@ def _load_same_product(
         )
         cape_sfc = np.zeros((ny, nx), dtype=np.float64)
 
+    # Downward shortwave radiation (for WBGT)
+    dswrf_raw = _find_var(sfc_ds_list, "dswrf", "DSWRF", "sdswrf")
+    dswrf_wm2 = dswrf_raw.astype(np.float64) if dswrf_raw is not None else None
+    if dswrf_wm2 is None:
+        logger.warning(
+            "%s: DSWRF not found in surface batch, WBGT will not be computed.",
+            model.upper(),
+        )
+
+    # Total cloud cover
+    tcdc_raw = _find_var(sfc_ds_list, "tcc", "TCDC", "tcdc")
+    tcdc_pct = tcdc_raw.astype(np.float64) if tcdc_raw is not None else None
+    if tcdc_pct is None:
+        logger.warning(
+            "%s: TCDC not found in surface batch.",
+            model.upper(),
+        )
+
     logger.info("Surface fields loaded  (%d x %d)", ny, nx)
 
     # ---- Pressure-level fields (one download per level) -------------------
@@ -430,6 +473,7 @@ def _load_same_product(
         refc_dbz=refc_dbz, cape_sfc=cape_sfc,
         t_C=t_C, q_kgkg=q_kgkg, h_agl_m=h_agl_m, p_Pa=p_Pa,
         u=u_3d, v=v_3d,
+        dswrf_wm2=dswrf_wm2, tcdc_pct=tcdc_pct,
         levels_mb=list(levels), date=None, fxx=fxx,
         model=model, resolution_km=cfg.resolution_km,
     )

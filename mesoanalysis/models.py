@@ -46,6 +46,10 @@ class ModelData:
     u: np.ndarray            # U wind [m/s]
     v: np.ndarray            # V wind [m/s]
 
+    # Optional surface fields (may be None if unavailable)
+    dswrf_wm2: Optional[np.ndarray] = None   # Downward SW radiation [W/m^2]
+    tcdc_pct: Optional[np.ndarray] = None     # Total cloud cover [%]
+
     # Metadata
     levels_mb: List[float] = field(default_factory=list)
     date: Optional[datetime] = None
