@@ -63,8 +63,24 @@ def _build_norm_and_cmap(style):
     return None, None, None
 
 
-def render_field(lon, lat, data, name, analysis_time, output_dir):
-    """Render a single parameter field to PNG."""
+def render_field(lon, lat, data, name, analysis_time, output_dir, model_name="HRRR"):
+    """Render a single parameter field to PNG.
+
+    Parameters
+    ----------
+    lon, lat : 2-D arrays
+        Grid coordinates.
+    data : 2-D array
+        Parameter data on the grid.
+    name : str
+        Parameter name (key into STYLES).
+    analysis_time : datetime
+        Analysis valid time.
+    output_dir : path-like
+        Directory for output PNG.
+    model_name : str
+        Model display name for the title (e.g. ``"HRRR"``, ``"RAP"``, ``"NAM"``).
+    """
     style = STYLES.get(name)
     if style is None:
         return
@@ -102,7 +118,7 @@ def render_field(lon, lat, data, name, analysis_time, output_dir):
     label = style["label"]
     time_str = analysis_time.strftime("%Y-%m-%d %H:%M UTC")
     ax.set_title(
-        f"HRRR + Sfc Obs Analysis | {label}\n{time_str}",
+        f"{model_name.upper()} + Sfc Obs Analysis | {label}\n{time_str}",
         fontsize=11,
     )
 
@@ -113,10 +129,25 @@ def render_field(lon, lat, data, name, analysis_time, output_dir):
     print(f"  saved {output_path}")
 
 
-def render_all(lon, lat, params_dict, analysis_time, output_dir):
-    """Render all parameter fields that have a matching style definition."""
+def render_all(lon, lat, params_dict, analysis_time, output_dir, model_name="HRRR"):
+    """Render all parameter fields that have a matching style definition.
+
+    Parameters
+    ----------
+    lon, lat : 2-D arrays
+        Grid coordinates.
+    params_dict : dict
+        Mapping of parameter name to 2-D data array.
+    analysis_time : datetime
+        Analysis valid time.
+    output_dir : path-like
+        Root output directory.
+    model_name : str
+        Model display name for titles (e.g. ``"HRRR"``, ``"RAP"``, ``"NAM"``).
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, data in params_dict.items():
         if name in STYLES:
-            render_field(lon, lat, data, name, analysis_time, output_dir)
+            render_field(lon, lat, data, name, analysis_time, output_dir,
+                         model_name=model_name)

@@ -2,128 +2,123 @@
 
 from pathlib import Path
 
-from mesoanalysis.config import BARNES
+from mesoanalysis.config import BARNES_CONFIGS, BARNES
 
 
-def run(analysis_time, output_dir=None, fxx=0):
-    """Run full mesoanalysis pipeline."""
+def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
+    """Run full mesoanalysis pipeline.
+
+    Parameters
+    ----------
+    analysis_time : datetime
+        Analysis valid time (UTC).
+    output_dir : path-like, optional
+        Root output directory.  Defaults to ``./output/{model}/{YYYYMMDD_HHMM}``.
+    fxx : int
+        Forecast hour (0 for analysis).
+    model : str
+        NWP model identifier: ``"hrrr"``, ``"rap"``, or ``"nam"``.
+    """
+    model = model.lower()
+
     if output_dir is None:
-        output_dir = Path(f"./output/{analysis_time:%Y%m%d_%H%M}")
+        output_dir = Path(f"./output/{model}/{analysis_time:%Y%m%d_%H%M}")
 
-    print(f"=== Mesoanalysis for {analysis_time} ===")
+    # Select Barnes parameters for this model
+    barnes_cfg = BARNES_CONFIGS.get(model, BARNES)
+    model_name = model.upper()
 
-    # 1. Load HRRR
-    print("\n[1/8] Loading HRRR data ...")
-    from .hrrr.ingest import load_hrrr
-    hrrr = load_hrrr(analysis_time, fxx=fxx)
+    print(f"=== Mesoanalysis for {analysis_time} ({model_name}) ===")
 
-    # 2. Fetch observations
-    print("[2/8] Fetching surface observations ...")
-    from .obs.fetch import fetch_surface_obs
-    obs = fetch_surface_obs(analysis_time, window_minutes=20)
-    print(f"       {len(obs)} observations fetched")
+    # 1. Load model data
+    print(f"\n[1/8] Loading {model_name} data ...")
+    from .ingest import load_model
+    model_data = load_model(analysis_time, model=model, fxx=fxx)
 
-    # 3. QC observations against HRRR background
+    # 2. Fetch observations (multi-source: ASOS + mesonets + NWS + NDBC + CWOP)
+    print("[2/8] Fetching surface observations (multi-source) ...")
+    from .obs.fetch_multi import fetch_all_surface_obs
+    obs = fetch_all_surface_obs(analysis_time, window_minutes=20)
+    print(f"       {len(obs)} observations fetched (multi-source)")
+
+    # 3. QC observations against model background
     print("[3/8] Quality-controlling observations ...")
-    from .obs.qc import qc_obs, HRRRFirstGuess
+    from .obs.qc import qc_obs, ModelFirstGuess
 
-    # Build HRRRFirstGuess from HRRRData — need monotonically increasing
-    # 1-D lat/lon for RegularGridInterpolator.
-    lats_2d = hrrr.lat
-    lons_2d = hrrr.lon
+    # Convert units for QC: ModelData stores K and Pa
+    t2m_C = model_data.t2m_K - 273.15
+    td2m_C = model_data.td2m_K - 273.15
+    mslp_hPa = model_data.mslp_Pa / 100.0
 
-    # HRRR is curvilinear but for QC interpolation we approximate with
-    # the first row (lons) and first column (lats).
-    lats_1d = lats_2d[:, 0]
-    lons_1d = lons_2d[0, :]
+    # Normalize model longitudes from 0..360 to -180..180 to match obs
+    lons_norm = model_data.lon.copy()
+    lons_norm[lons_norm > 180] -= 360
 
-    # Ensure monotonically increasing
-    if lats_1d[0] > lats_1d[-1]:
-        lats_1d = lats_1d[::-1]
-        flip_lat = True
-    else:
-        flip_lat = False
-
-    if lons_1d[0] > lons_1d[-1]:
-        lons_1d = lons_1d[::-1]
-        flip_lon = True
-    else:
-        flip_lon = False
-
-    def _orient(arr):
-        """Flip array axes to match sorted lat/lon."""
-        out = arr
-        if flip_lat:
-            out = out[::-1, :]
-        if flip_lon:
-            out = out[:, ::-1]
-        return out
-
-    # Convert units for QC: HRRRData stores K and Pa
-    t2m_C = hrrr.t2m_K - 273.15
-    td2m_C = hrrr.td2m_K - 273.15
-    mslp_hPa = hrrr.mslp_Pa / 100.0
-
-    first_guess = HRRRFirstGuess(
-        lats_1d=lats_1d,
-        lons_1d=lons_1d,
-        t_2m=_orient(t2m_C),
-        td_2m=_orient(td2m_C),
-        u_10m=_orient(hrrr.u10),
-        v_10m=_orient(hrrr.v10),
-        mslp=_orient(mslp_hPa),
+    first_guess = ModelFirstGuess(
+        lats_2d=model_data.lat,
+        lons_2d=lons_norm,
+        t_2m=t2m_C,
+        td_2m=td2m_C,
+        u_10m=model_data.u10,
+        v_10m=model_data.v10,
+        mslp=mslp_hPa,
     )
 
-    obs_qc = qc_obs(obs, first_guess)
+    obs_qc = qc_obs(obs, first_guess, model=model)
     print(f"       {len(obs_qc)} observations passed QC")
 
-    # 4. Barnes objective analysis — one call per surface field
+    # 4. Barnes objective analysis -- one call per surface field
+    #    T, Td, u, v use ALL obs; mslp uses only obs with valid pressure
     print("[4/8] Running Barnes objective analysis ...")
     from .analysis.barnes import barnes_analysis
 
     obs_lats = obs_qc.lats
     obs_lons = obs_qc.lons
+    n_all = len(obs_qc)
 
     analyzed_t2m = barnes_analysis(
-        hrrr.lat, hrrr.lon, t2m_C,
+        model_data.lat, model_data.lon, t2m_C,
         obs_lats, obs_lons, obs_qc.t_array,
-        kappa=BARNES.kappa, gamma=BARNES.gamma, passes=BARNES.passes,
+        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
     )
     print("       t2m done")
 
     analyzed_td2m = barnes_analysis(
-        hrrr.lat, hrrr.lon, td2m_C,
+        model_data.lat, model_data.lon, td2m_C,
         obs_lats, obs_lons, obs_qc.td_array,
-        kappa=BARNES.kappa, gamma=BARNES.gamma, passes=BARNES.passes,
+        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
     )
     print("       td2m done")
 
     analyzed_u10 = barnes_analysis(
-        hrrr.lat, hrrr.lon, hrrr.u10,
+        model_data.lat, model_data.lon, model_data.u10,
         obs_lats, obs_lons, obs_qc.u_array,
-        kappa=BARNES.kappa, gamma=BARNES.gamma, passes=BARNES.passes,
+        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
     )
     print("       u10 done")
 
     analyzed_v10 = barnes_analysis(
-        hrrr.lat, hrrr.lon, hrrr.v10,
+        model_data.lat, model_data.lon, model_data.v10,
         obs_lats, obs_lons, obs_qc.v_array,
-        kappa=BARNES.kappa, gamma=BARNES.gamma, passes=BARNES.passes,
+        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
     )
     print("       v10 done")
 
+    # MSLP: only use obs that have valid pressure readings
+    obs_pres = obs_qc.with_pressure()
+    print(f"       mslp: using {len(obs_pres)} of {n_all} obs (pressure-valid)")
     analyzed_mslp = barnes_analysis(
-        hrrr.lat, hrrr.lon, mslp_hPa,
-        obs_lats, obs_lons, obs_qc.mslp_array,
-        kappa=BARNES.kappa, gamma=BARNES.gamma, passes=BARNES.passes,
+        model_data.lat, model_data.lon, mslp_hPa,
+        obs_pres.lats, obs_pres.lons, obs_pres.mslp_array,
+        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
     )
     print("       mslp done")
 
-    # 5. Merge analyzed surface into HRRR
-    print("[5/8] Merging analysis into HRRR grid ...")
+    # 5. Merge analyzed surface into model data
+    print(f"[5/8] Merging analysis into {model_name} grid ...")
     from .analysis.fields import merge_analysis
     merged = merge_analysis(
-        hrrr, analyzed_t2m, analyzed_td2m, analyzed_u10, analyzed_v10, analyzed_mslp,
+        model_data, analyzed_t2m, analyzed_td2m, analyzed_u10, analyzed_v10, analyzed_mslp,
     )
 
     # 6. Compute parameters
@@ -159,11 +154,24 @@ def run(analysis_time, output_dir=None, fxx=0):
     params["t2m_f"] = (merged.t2m_K - 273.15) * 9 / 5 + 32
     params["td2m_f"] = (merged.td2m_K - 273.15) * 9 / 5 + 32
 
-    # 8. Render all maps
-    print("[8/8] Rendering maps ...")
+    # 8. Render static maps (matplotlib PNGs)
+    print("[8/9] Rendering static maps ...")
     from .plotting.render import render_all
 
-    render_all(merged.lon, merged.lat, params, analysis_time, output_dir)
+    render_all(merged.lon, merged.lat, params, analysis_time, output_dir,
+               model_name=model_name)
+
+    # 9. Export web overlays (transparent PNGs + manifest + grids)
+    print("[9/9] Exporting web overlays ...")
+    from .output.export import export_web_overlays
+
+    export_web_overlays(
+        params=params,
+        lon=merged.lon,
+        lat=merged.lat,
+        analysis_time=analysis_time,
+        output_dir=output_dir,
+    )
 
     print(f"\n=== Done. Output in {output_dir} ===")
     return params

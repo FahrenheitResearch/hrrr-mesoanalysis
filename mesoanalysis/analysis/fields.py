@@ -1,8 +1,8 @@
 """
-Merge Barnes-analyzed surface fields back into HRRR data.
+Merge Barnes-analyzed surface fields back into model data.
 
 After running Barnes objective analysis on individual surface variables,
-this module replaces the corresponding fields in the HRRR dataset and
+this module replaces the corresponding fields in the model dataset and
 recomputes any derived quantities that depend on the corrected values.
 """
 
@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any
 
 import numpy as np
+
+from mesoanalysis.models import ModelData
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +55,21 @@ def _mixing_ratio_from_dewpoint(td_C: np.ndarray, p_hPa: np.ndarray) -> np.ndarr
 # ---------------------------------------------------------------------------
 
 def merge_analysis(
-    hrrr_data: Any,
+    model_data: ModelData,
     analyzed_t2m: np.ndarray,
     analyzed_td2m: np.ndarray,
     analyzed_u10: np.ndarray,
     analyzed_v10: np.ndarray,
     analyzed_mslp: np.ndarray,
-) -> Any:
-    """Replace HRRR surface fields with Barnes-analyzed versions.
+) -> ModelData:
+    """Replace model surface fields with Barnes-analyzed versions.
 
     Parameters
     ----------
-    hrrr_data
-        HRRR dataset object.  Expected to have attributes ``t2m`` (K),
-        ``td2m`` (K), ``u10`` (m/s), ``v10`` (m/s), ``mslp`` (Pa or hPa),
-        and ``surface_pressure`` (Pa or hPa).  If the object is a dataclass,
-        ``dataclasses.replace`` is used; otherwise a shallow ``copy.copy``
-        is made.
+    model_data : ModelData
+        Model dataset object with attributes ``t2m_K`` (K),
+        ``td2m_K`` (K), ``u10`` (m/s), ``v10`` (m/s), ``mslp_Pa`` (Pa),
+        and ``psfc_Pa`` (Pa).
     analyzed_t2m : ndarray
         Analyzed 2-m temperature (degrees Celsius).
     analyzed_td2m : ndarray
@@ -84,17 +83,17 @@ def merge_analysis(
 
     Returns
     -------
-    modified : same type as *hrrr_data*
-        A copy of *hrrr_data* with corrected surface fields and
+    modified : ModelData
+        A copy of *model_data* with corrected surface fields and
         recomputed surface mixing ratio.
     """
     import dataclasses
 
-    logger.info("Merging analyzed surface fields into HRRR data.")
+    logger.info("Merging analyzed surface fields into model data.")
 
     # -- compute derived fields before building the output -------------------
     # Determine surface pressure for mixing-ratio calculation.
-    sfc_p = getattr(hrrr_data, "psfc_Pa", None)
+    sfc_p = getattr(model_data, "psfc_Pa", None)
     if sfc_p is None:
         logger.debug(
             "No psfc_Pa attribute; using analyzed MSLP for "
@@ -121,15 +120,15 @@ def merge_analysis(
     }
 
     # -- create a modified copy ----------------------------------------------
-    is_dc = dataclasses.is_dataclass(hrrr_data) and not isinstance(hrrr_data, type)
+    is_dc = dataclasses.is_dataclass(model_data) and not isinstance(model_data, type)
 
     if is_dc:
         # Only pass fields that actually exist on the dataclass.
-        dc_names = {f.name for f in dataclasses.fields(hrrr_data)}
+        dc_names = {f.name for f in dataclasses.fields(model_data)}
         replace_kwargs = {k: v for k, v in new_fields.items() if k in dc_names}
-        out = dataclasses.replace(hrrr_data, **replace_kwargs)
+        out = dataclasses.replace(model_data, **replace_kwargs)
     else:
-        out = copy.copy(hrrr_data)
+        out = copy.copy(model_data)
         for attr, value in new_fields.items():
             setattr(out, attr, value)
 

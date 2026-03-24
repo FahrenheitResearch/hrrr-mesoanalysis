@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HRRR Mesoanalysis</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Top Bar -->
+    <header id="topbar">
+        <div class="topbar-left">
+            <h1>HRRR Mesoanalysis</h1>
+        </div>
+        <div class="topbar-center">
+            <span id="analysis-time" class="analysis-time">Loading...</span>
+            <span id="param-title" class="param-title"></span>
+        </div>
+        <div class="topbar-right">
+            <div class="control-group">
+                <label for="opacity-slider">Opacity</label>
+                <input type="range" id="opacity-slider" min="0" max="100" value="100">
+                <span id="opacity-value">100%</span>
+            </div>
+            <div class="control-group">
+                <label>View</label>
+                <button id="btn-image-view" class="view-btn active" title="Image View">IMG</button>
+                <button id="btn-map-view" class="view-btn" title="Map Overlay View">MAP</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div id="main-content">
+
+        <!-- Sidebar -->
+        <nav id="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-label">Parameters</span>
+                <div class="run-selector">
+                    <label for="run-select">Run:</label>
+                    <select id="run-select"></select>
+                </div>
+            </div>
+
+            <div class="param-categories">
+
+                <div class="category" data-category="thermodynamic">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Thermodynamic</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="sbcape">SBCAPE</button>
+                        <button class="param-btn" data-param="mlcape">MLCAPE</button>
+                        <button class="param-btn" data-param="mucape">MUCAPE</button>
+                        <button class="param-btn" data-param="sb3cape">SB3CAPE</button>
+                        <button class="param-btn" data-param="sbcin">SBCIN</button>
+                    </div>
+                </div>
+
+                <div class="category" data-category="moisture">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Moisture</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="theta_e_sfc">Surface &theta;e</button>
+                        <button class="param-btn" data-param="theta_e_850">850mb &theta;e</button>
+                        <button class="param-btn" data-param="mixing_ratio">Mixing Ratio</button>
+                        <button class="param-btn" data-param="pw">Precip Water</button>
+                        <button class="param-btn" data-param="wetbulb_sfc">Wet Bulb</button>
+                    </div>
+                </div>
+
+                <div class="category" data-category="lapse-rates">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Lapse Rates</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="lr_700_500">700-500mb</button>
+                    </div>
+                </div>
+
+                <div class="category" data-category="kinematics">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Kinematics</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="shear_01km">0-1km Shear</button>
+                        <button class="param-btn" data-param="shear_06km">0-6km Shear</button>
+                        <button class="param-btn" data-param="srh_01km">0-1km SRH</button>
+                        <button class="param-btn" data-param="srh_03km">0-3km SRH</button>
+                    </div>
+                </div>
+
+                <div class="category" data-category="composite">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Composite</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="stp">STP</button>
+                        <button class="param-btn" data-param="scp">SCP</button>
+                    </div>
+                </div>
+
+                <div class="category" data-category="surface">
+                    <div class="category-header">
+                        <span class="category-arrow">&#9656;</span>
+                        <span class="category-name">Surface</span>
+                    </div>
+                    <div class="category-items">
+                        <button class="param-btn" data-param="t2m_f">Temperature (&deg;F)</button>
+                        <button class="param-btn" data-param="td2m_f">Dewpoint (&deg;F)</button>
+                    </div>
+                </div>
+
+            </div>
+        </nav>
+
+        <!-- Map / Image Viewer -->
+        <div id="viewer-container">
+            <!-- Image view (default) -->
+            <div id="image-viewer" class="viewer active">
+                <img id="param-image" src="" alt="Parameter map">
+                <div id="image-loading" class="loading-overlay">
+                    <div class="spinner"></div>
+                    <span>Loading...</span>
+                </div>
+            </div>
+
+            <!-- Leaflet map view -->
+            <div id="map-viewer" class="viewer">
+                <div id="leaflet-map"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Legend Bar -->
+    <footer id="legend-bar">
+        <div id="legend-content">
+            <span id="legend-label" class="legend-label"></span>
+            <div id="legend-colorbar" class="legend-colorbar"></div>
+            <span id="legend-units" class="legend-units"></span>
+        </div>
+    </footer>
+
+    <!-- Point Query Popup -->
+    <div id="point-popup" class="point-popup hidden">
+        <div class="popup-header">
+            <span id="popup-title">Point Query</span>
+            <button id="popup-close">&times;</button>
+        </div>
+        <div id="popup-content"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -22,7 +22,7 @@ class SurfaceObs:
     td_C: float         # dewpoint, Celsius
     u_ms: float         # u-wind component, m/s
     v_ms: float         # v-wind component, m/s
-    mslp_hPa: float     # mean sea-level pressure, hPa
+    mslp_hPa: float = float("nan")  # mean sea-level pressure, hPa (NaN = missing)
 
     @property
     def wind_speed_ms(self) -> float:
@@ -93,6 +93,15 @@ class ObsCollection:
     @property
     def stations(self) -> list[str]:
         return [o.station for o in self.obs]
+
+    @property
+    def has_pressure(self) -> np.ndarray:
+        """Boolean mask: True where mslp_hPa is not NaN."""
+        return ~np.isnan(self.mslp_array)
+
+    def with_pressure(self) -> "ObsCollection":
+        """Return a new collection keeping only obs with valid MSLP."""
+        return self.filter(self.has_pressure)
 
     # -- filtering -----------------------------------------------------------
     def filter(self, mask: np.ndarray) -> "ObsCollection":
