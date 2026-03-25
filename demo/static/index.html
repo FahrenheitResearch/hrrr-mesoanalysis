@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>mesoanalysis</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Map fills entire viewport -->
+    <div id="map"></div>
+
+    <!-- Top-left logo -->
+    <div id="top-left">
+        <span class="logo-text">mesoanalysis</span>
+    </div>
+
+    <!-- Top-right controls -->
+    <div id="top-right">
+        <select id="model-select">
+            <option value="hrrr" selected>HRRR</option>
+            <option value="rap">RAP</option>
+        </select>
+        <span id="run-time">--</span>
+    </div>
+
+    <!-- Opacity slider (top-right, below run info) -->
+    <div id="opacity-control">
+        <label for="opacity-slider">Opacity</label>
+        <input type="range" id="opacity-slider" min="0" max="100" value="70">
+    </div>
+
+    <!-- Station tooltip (follows cursor) -->
+    <div id="station-tooltip" class="hidden"></div>
+
+    <!-- Station popup (click) -->
+    <div id="station-popup" class="hidden">
+        <div id="station-popup-close">&times;</div>
+        <div id="station-popup-content"></div>
+    </div>
+
+    <!-- Bottom parameter bar -->
+    <div id="bottom-bar">
+        <!-- Color legend -->
+        <div id="color-legend">
+            <div id="legend-label"></div>
+            <div id="legend-gradient"></div>
+            <div id="legend-ticks"></div>
+        </div>
+
+        <!-- Category tabs -->
+        <div id="category-tabs">
+            <button class="cat-tab active" data-cat="severe">Severe</button>
+            <button class="cat-tab" data-cat="shear">Shear</button>
+            <button class="cat-tab" data-cat="thermo">Thermo</button>
+            <button class="cat-tab" data-cat="moisture">Moisture</button>
+            <button class="cat-tab" data-cat="surface">Surface</button>
+            <button class="cat-tab" data-cat="fire">Fire</button>
+        </div>
+
+        <!-- Parameter pills (scrollable row) -->
+        <div id="param-pills"></div>
+    </div>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
