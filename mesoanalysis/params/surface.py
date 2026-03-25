@@ -111,10 +111,23 @@ def compute_hot_dry_windy(data):
 def compute_wbgt(data):
     """Compute Wet Bulb Globe Temperature (WBGT) in Fahrenheit.
 
-    Requires DSWRF (downward shortwave radiation) to be available.
-    Uses the Dimiceli globe temperature approximation.
+    Implements the Dimiceli & Piltz (NWS Tulsa) globe temperature
+    estimation from standard meteorological observations.
 
-    WBGT = 0.7 * Tw + 0.2 * Tg + 0.1 * Td (dry bulb)
+    Reference:
+        Dimiceli, V.E., S.F. Piltz, and S.A. Amburn, "Estimation of
+        Black Globe Temperature for Calculation of the WBGT Index."
+
+    Globe temperature derived from heat balance linearization (Eq. 10):
+        T_g = (B + C*Ta + 7680000) / (C + 256000)
+    where B depends on solar irradiance, atmospheric emissivity, and
+    temperature; C depends on wind speed.
+
+    Outdoor WBGT (with solar load):
+        WBGT = 0.7 * NWB + 0.2 * GT + 0.1 * DB
+
+    Indoor WBGT (no solar load, used for nighttime):
+        WBGT = 0.7 * NWB + 0.3 * GT
 
     Returns dict with key: wbgt (2D [ny, nx] in F), or empty dict if
     DSWRF is unavailable.
@@ -190,33 +203,41 @@ def compute_wbgt(data):
     # Stefan-Boltzmann constant
     sigma = 5.67e-8  # W/(m^2 K^4)
 
-    # Vapor pressure from dewpoint
-    e_a = np.array(_calc.vapor_pressure_array(
-        td2_C.ravel().astype(np.float64)
-    )).reshape(ny, nx)
+    # Barometric pressure in mb (for vapor pressure formula)
+    P_mb = (data.psfc_Pa / 100.0).astype(np.float64)
 
-    # Emissivity of atmosphere
+    # Vapor pressure using the paper's exact formula (Eq. 6):
+    # e_a = exp(17.67*(Td-Ta)/(Td+243.5)) * (1.0007 + 3.46e-6*P) * 6.112*exp(17.502*Ta/(240.97+Ta))
+    e_a = (np.exp(17.67 * (td2_C - t2_C) / (td2_C + 243.5))
+           * (1.0007 + 0.00000346 * P_mb)
+           * 6.112 * np.exp(17.502 * t2_C / (240.97 + t2_C)))
+
+    # Thermal emissivity of atmosphere (Eq. 5)
     epsilon_a = 0.575 * np.power(np.maximum(e_a, 0.01), 1.0 / 7.0)
 
-    # Direct beam and diffuse radiation components
-    # Avoid division by zero at cos(zen) = 0
-    cos_zen_safe = np.maximum(cos_zen, 0.01)
+    # Direct beam and diffuse radiation FRACTIONS (dimensionless)
+    # Paper: f_db and f_dif are fractions of S, not absolute values
+    # Clamp cos(zen) to avoid singularity at low sun angles
+    cos_zen_safe = np.maximum(cos_zen, 0.1)
+    f_db = f_dir          # direct beam fraction
+    f_dif = f_dif_frac    # diffuse fraction
 
-    f_db = S * f_dir          # direct beam irradiance [W/m^2]
-    f_dif = S * f_dif_frac    # diffuse irradiance [W/m^2]
+    # Globe temperature using Dimiceli formula (Eq. 4 -> Eq. 10)
+    # B = S * (f_db/(4*sigma*cos(z)) + (1.2/sigma)*f_dif) + epsilon_a * Ta^4
+    # NOTE: Ta^4 uses CELSIUS, not Kelvin — the linearization constants
+    # (7680000 and 256000) were derived for the Celsius domain [20, 60]
+    B = (S * (f_db / (4.0 * sigma * cos_zen_safe) + (1.2 / sigma) * f_dif)
+         + epsilon_a * t2_C ** 4)
 
-    # Globe temperature using Dimiceli formula
-    # B = S * (f_db/(4*sigma*cos(z)) + 1.2/sigma * f_dif) + epsilon_a * (T_a+273.15)^4
-    B = (f_db / (4.0 * sigma * cos_zen_safe) +
-         1.2 / sigma * f_dif +
-         epsilon_a * t2_K ** 4)
-
-    # C = 0.315 * (wind_speed_m_per_hour)^0.58 / 5.3865e-8
+    # C = 0.315 * u^0.58 / (epsilon * sigma)  where epsilon=0.95
+    # Paper: C = 0.315 * u^0.58 / 5.3865e-8  (since 0.95 * 5.67e-8 = 5.3865e-8)
     wspd_m_hr_safe = np.maximum(wspd_m_hr, 1.0)  # avoid zero wind
     C = 0.315 * np.power(wspd_m_hr_safe, 0.58) / 5.3865e-8
 
-    # T_g = (B + C*T_a + 7680000) / (C + 256000)  in Celsius
+    # T_g = (B + C*Ta + 7680000) / (C + 256000)  in Celsius (Eq. 10)
+    # Paper states linearization is valid for T_g in [20, 60] C
     T_globe_C = (B + C * t2_C + 7680000.0) / (C + 256000.0)
+    T_globe_C = np.clip(T_globe_C, t2_C, 80.0)  # globe temp >= ambient, <= 80C
 
     # WBGT = 0.7 * wet_bulb + 0.2 * T_globe + 0.1 * T_dry (all in C)
     wbgt_C = 0.7 * wb + 0.2 * T_globe_C + 0.1 * t2_C
@@ -225,9 +246,10 @@ def compute_wbgt(data):
     wbgt_F = wbgt_C * 9.0 / 5.0 + 32.0
 
     # Mask nighttime (solar zenith > ~90 degrees, cos_zen near zero)
-    # For nighttime, use simplified indoor WBGT: 0.7*Tw + 0.3*Td
+    # For nighttime / indoor: WBGT = 0.7*NWB + 0.3*GT (OSHA formula 1)
+    # At night globe temp ~ ambient temp (no solar radiative heating)
     night_mask = cos_zen < 0.01
-    wbgt_indoor_C = 0.7 * wb + 0.3 * t2_C
+    wbgt_indoor_C = 0.7 * wb + 0.3 * t2_C  # GT ≈ Ta at night
     wbgt_indoor_F = wbgt_indoor_C * 9.0 / 5.0 + 32.0
     wbgt_F = np.where(night_mask, wbgt_indoor_F, wbgt_F)
 
