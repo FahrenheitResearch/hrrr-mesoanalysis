@@ -1,11 +1,12 @@
 """Full mesoanalysis pipeline orchestrator."""
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from mesoanalysis.config import BARNES_CONFIGS, BARNES
 
 
-def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
+def run(analysis_time, output_dir=None, fxx=0, model="hrrr", render_static=True):
     """Run full mesoanalysis pipeline.
 
     Parameters
@@ -18,6 +19,9 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
         Forecast hour (0 for analysis).
     model : str
         NWP model identifier: ``"hrrr"``, ``"rap"``, or ``"nam"``.
+    render_static : bool
+        If True (default), render matplotlib PNGs.  Set False to skip
+        static rendering and only produce web overlays (much faster).
     """
     model = model.lower()
 
@@ -67,52 +71,53 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
     obs_qc = qc_obs(obs, first_guess, model=model)
     print(f"       {len(obs_qc)} observations passed QC")
 
-    # 4. Barnes objective analysis -- one call per surface field
-    #    T, Td, u, v use ALL obs; mslp uses only obs with valid pressure
-    print("[4/9] Running Barnes objective analysis ...")
+    # 4. Barnes objective analysis -- run all 5 fields in parallel
+    #    (Barnes uses numpy/scipy which release the GIL during heavy computation)
+    print("[4/9] Running Barnes objective analysis (parallel) ...")
     from .analysis.barnes import barnes_analysis
 
     obs_lats = obs_qc.lats
     obs_lons = obs_qc.lons
     n_all = len(obs_qc)
 
-    analyzed_t2m = barnes_analysis(
-        model_data.lat, model_data.lon, t2m_C,
-        obs_lats, obs_lons, obs_qc.t_array,
-        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
-    )
-    print("       t2m done")
-
-    analyzed_td2m = barnes_analysis(
-        model_data.lat, model_data.lon, td2m_C,
-        obs_lats, obs_lons, obs_qc.td_array,
-        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
-    )
-    print("       td2m done")
-
-    analyzed_u10 = barnes_analysis(
-        model_data.lat, model_data.lon, model_data.u10,
-        obs_lats, obs_lons, obs_qc.u_array,
-        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
-    )
-    print("       u10 done")
-
-    analyzed_v10 = barnes_analysis(
-        model_data.lat, model_data.lon, model_data.v10,
-        obs_lats, obs_lons, obs_qc.v_array,
-        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
-    )
-    print("       v10 done")
-
-    # MSLP: only use obs that have valid pressure readings
+    # MSLP uses a different subset of observations
     obs_pres = obs_qc.with_pressure()
     print(f"       mslp: using {len(obs_pres)} of {n_all} obs (pressure-valid)")
-    analyzed_mslp = barnes_analysis(
-        model_data.lat, model_data.lon, mslp_hPa,
-        obs_pres.lats, obs_pres.lons, obs_pres.mslp_array,
-        kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma, passes=barnes_cfg.passes,
-    )
-    print("       mslp done")
+
+    def _run_barnes(name, background, o_lats, o_lons, o_values):
+        """Run a single Barnes analysis and return (name, result)."""
+        result = barnes_analysis(
+            model_data.lat, model_data.lon, background,
+            o_lats, o_lons, o_values,
+            kappa=barnes_cfg.kappa, gamma=barnes_cfg.gamma,
+            passes=barnes_cfg.passes,
+        )
+        return name, result
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [
+            pool.submit(_run_barnes, "t2m", t2m_C,
+                        obs_lats, obs_lons, obs_qc.t_array),
+            pool.submit(_run_barnes, "td2m", td2m_C,
+                        obs_lats, obs_lons, obs_qc.td_array),
+            pool.submit(_run_barnes, "u10", model_data.u10,
+                        obs_lats, obs_lons, obs_qc.u_array),
+            pool.submit(_run_barnes, "v10", model_data.v10,
+                        obs_lats, obs_lons, obs_qc.v_array),
+            pool.submit(_run_barnes, "mslp", mslp_hPa,
+                        obs_pres.lats, obs_pres.lons, obs_pres.mslp_array),
+        ]
+        barnes_results = {}
+        for f in futures:
+            name, result = f.result()
+            barnes_results[name] = result
+            print(f"       {name} done")
+
+    analyzed_t2m = barnes_results["t2m"]
+    analyzed_td2m = barnes_results["td2m"]
+    analyzed_u10 = barnes_results["u10"]
+    analyzed_v10 = barnes_results["v10"]
+    analyzed_mslp = barnes_results["mslp"]
 
     # 5. Merge analyzed surface into model data
     print(f"[5/9] Merging analysis into {model_name} grid ...")
@@ -211,12 +216,15 @@ def run(analysis_time, output_dir=None, fxx=0, model="hrrr"):
     params["t2m_f"] = (merged.t2m_K - 273.15) * 9 / 5 + 32
     params["td2m_f"] = (merged.td2m_K - 273.15) * 9 / 5 + 32
 
-    # 8. Render static maps (matplotlib PNGs)
-    print("[9/10] Rendering static maps ...")
-    from .plotting.render import render_all
+    # 8. Render static maps (matplotlib PNGs) -- optional
+    if render_static:
+        print("[9/10] Rendering static maps (parallel) ...")
+        from .plotting.render import render_all
 
-    render_all(merged.lon, merged.lat, params, analysis_time, output_dir,
-               model_name=model_name)
+        render_all(merged.lon, merged.lat, params, analysis_time, output_dir,
+                   model_name=model_name)
+    else:
+        print("[9/10] Skipping static map rendering (render_static=False)")
 
     # 9. Export web overlays (transparent PNGs + manifest + grids)
     print("[10/10] Exporting web overlays ...")

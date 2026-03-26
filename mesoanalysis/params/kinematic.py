@@ -76,6 +76,9 @@ def compute_bunkers_storm_motion(data):
     Uses metrust bunkers_storm_motion(p_prof, u_prof, v_prof, height_prof)
     which returns ((rm_u, rm_v), (lm_u, lm_v), (mw_u, mw_v)).
 
+    Profiles are pre-sorted by pressure descending (surface first) once,
+    then columns are extracted via vectorised numpy slicing.
+
     Returns dict with keys:
         bunkers_rm_u, bunkers_rm_v: right-mover storm motion u/v [m/s]
         bunkers_lm_u, bunkers_lm_v: left-mover storm motion u/v [m/s]
@@ -85,24 +88,26 @@ def compute_bunkers_storm_motion(data):
     nz = len(data.levels_mb)
     levels = np.array(data.levels_mb, dtype=np.float64)
 
+    # Pre-sort levels by pressure descending (surface first) once for all columns
+    sort_idx = np.argsort(-levels)
+    levels_sorted = levels[sort_idx]
+    # Reorder the 3D arrays along axis 0 (level axis)
+    u_sorted = data.u[sort_idx].astype(np.float64)
+    v_sorted = data.v[sort_idx].astype(np.float64)
+    h_sorted = data.h_agl_m[sort_idx].astype(np.float64)
+
     rm_u = np.zeros((ny, nx), dtype=np.float64)
     rm_v = np.zeros((ny, nx), dtype=np.float64)
     lm_u = np.zeros((ny, nx), dtype=np.float64)
     lm_v = np.zeros((ny, nx), dtype=np.float64)
 
+    p_col = levels_sorted.copy()  # Same for every column
+
     for j in range(ny):
         for i in range(nx):
-            p_col = levels.copy()
-            u_col = np.array([data.u[k, j, i] for k in range(nz)], dtype=np.float64)
-            v_col = np.array([data.v[k, j, i] for k in range(nz)], dtype=np.float64)
-            h_col = np.array([data.h_agl_m[k, j, i] for k in range(nz)], dtype=np.float64)
-
-            # Sort by pressure descending (surface first)
-            sort_idx = np.argsort(-p_col)
-            p_col = p_col[sort_idx]
-            u_col = u_col[sort_idx]
-            v_col = v_col[sort_idx]
-            h_col = h_col[sort_idx]
+            u_col = u_sorted[:, j, i].copy()
+            v_col = v_sorted[:, j, i].copy()
+            h_col = h_sorted[:, j, i].copy()
 
             try:
                 result = _calc.bunkers_storm_motion(p_col, u_col, v_col, h_col)

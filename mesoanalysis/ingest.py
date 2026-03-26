@@ -12,6 +12,7 @@ Herbie's subset-file overwrite issue.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List, Optional
 
@@ -22,6 +23,9 @@ from mesoanalysis.config import MODEL_CONFIGS, ModelConfig
 from mesoanalysis.models import ModelData
 
 logger = logging.getLogger(__name__)
+
+# Maximum parallel downloads — avoids overwhelming NOMADS / AWS
+_MAX_DOWNLOAD_WORKERS = 6
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +211,7 @@ def _load_separate_products(
 
     logger.info("Surface fields loaded  (%d x %d)", ny, nx)
 
-    # ---- Pressure-level fields --------------------------------------------
+    # ---- Pressure-level fields (parallel downloads) -----------------------
     levels = cfg.pressure_levels
     nz = len(levels)
 
@@ -218,35 +222,54 @@ def _load_separate_products(
     u_3d = np.empty((nz, ny, nx), dtype=np.float64)
     v_3d = np.empty((nz, ny, nx), dtype=np.float64)
 
-    for k, lev in enumerate(levels):
+    def _fetch_level_separate(k, lev):
+        """Fetch all fields for one pressure level (separate-product mode).
+
+        Each H_prs.xarray() downloads a distinct subset file, so parallel
+        calls are safe.
+        """
         lev_int = int(lev) if lev == int(lev) else lev
         lev_str = str(lev_int) if isinstance(lev_int, int) else str(lev)
         logger.debug("  pressure level %s mb", lev_str)
 
         ds_t = _H(cfg.prs_product).xarray(f":TMP:{lev_str} mb")
         t_k = _first_var(ds_t)
-        t_C[k] = (t_k - 273.15).astype(np.float64)
+        t_c = (t_k - 273.15).astype(np.float64)
 
         if cfg.has_dewpoint_prs:
             ds_td = _H(cfg.prs_product).xarray(f":DPT:{lev_str} mb")
             td_k = _first_var(ds_td)
-            q_kgkg[k] = _mixing_ratio_from_dewpoint(td_k, lev)
+            q = _mixing_ratio_from_dewpoint(td_k, lev)
         else:
             ds_rh = _H(cfg.prs_product).xarray(f":RH:{lev_str} mb")
             rh_vals = _first_var(ds_rh)
-            q_kgkg[k] = _mixing_ratio_from_rh(rh_vals, t_k, lev)
+            q = _mixing_ratio_from_rh(rh_vals, t_k, lev)
 
         ds_h = _H(cfg.prs_product).xarray(f":HGT:{lev_str} mb")
         hgt_msl = _first_var(ds_h).astype(np.float64)
-        h_agl_m[k] = hgt_msl - sfc_hgt
-
-        p_Pa[k] = lev * 100.0
+        h_agl = hgt_msl - sfc_hgt
 
         ds_u = _H(cfg.prs_product).xarray(f":UGRD:{lev_str} mb")
-        u_3d[k] = _first_var(ds_u).astype(np.float64)
+        u_lev = _first_var(ds_u).astype(np.float64)
 
         ds_v = _H(cfg.prs_product).xarray(f":VGRD:{lev_str} mb")
-        v_3d[k] = _first_var(ds_v).astype(np.float64)
+        v_lev = _first_var(ds_v).astype(np.float64)
+
+        return k, t_c, q, h_agl, lev * 100.0, u_lev, v_lev
+
+    with ThreadPoolExecutor(max_workers=_MAX_DOWNLOAD_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_level_separate, k, lev): k
+            for k, lev in enumerate(levels)
+        }
+        for future in as_completed(futures):
+            k, t_c, q, h_agl, p_val, u_lev, v_lev = future.result()
+            t_C[k] = t_c
+            q_kgkg[k] = q
+            h_agl_m[k] = h_agl
+            p_Pa[k] = p_val
+            u_3d[k] = u_lev
+            v_3d[k] = v_lev
 
     logger.info("Pressure-level fields loaded  (%d levels)", nz)
 
@@ -406,7 +429,7 @@ def _load_same_product(
 
     logger.info("Surface fields loaded  (%d x %d)", ny, nx)
 
-    # ---- Pressure-level fields (one download per level) -------------------
+    # ---- Pressure-level fields (parallel downloads) -----------------------
     levels = cfg.pressure_levels
     nz = len(levels)
 
@@ -417,7 +440,12 @@ def _load_same_product(
     u_3d = np.empty((nz, ny, nx), dtype=np.float64)
     v_3d = np.empty((nz, ny, nx), dtype=np.float64)
 
-    for k, lev in enumerate(levels):
+    def _fetch_level_same(k, lev):
+        """Fetch all fields for one pressure level (same-product mode).
+
+        Each call uses a distinct batched regex that produces a unique
+        subset file, so parallel calls are safe.
+        """
         lev_int = int(lev) if lev == int(lev) else lev
         lev_str = str(lev_int) if isinstance(lev_int, int) else str(lev)
         logger.debug("  pressure level %s mb (batched)", lev_str)
@@ -429,40 +457,52 @@ def _load_same_product(
         t_k_raw = _find_var(lev_ds_list, "t", "TMP")
         if t_k_raw is None:
             t_k_raw = _find_var_or_first(lev_ds_list, "t")
-        t_C[k] = (t_k_raw - 273.15).astype(np.float64)
+        t_c = (t_k_raw - 273.15).astype(np.float64)
 
         # Moisture
         if cfg.has_dewpoint_prs:
             td_k_raw = _find_var(lev_ds_list, "dpt", "d", "DPT")
             if td_k_raw is None:
-                # Fallback: look for any dataset that isn't the one with 't'
                 td_k_raw = _find_var_or_first(lev_ds_list, "dpt")
-            q_kgkg[k] = _mixing_ratio_from_dewpoint(td_k_raw, lev)
+            q = _mixing_ratio_from_dewpoint(td_k_raw, lev)
         else:
             rh_raw = _find_var(lev_ds_list, "r", "rh", "RH")
             if rh_raw is None:
                 rh_raw = _find_var_or_first(lev_ds_list, "r")
-            q_kgkg[k] = _mixing_ratio_from_rh(rh_raw, t_k_raw, lev)
+            q = _mixing_ratio_from_rh(rh_raw, t_k_raw, lev)
 
         # Geopotential height -> height AGL
         hgt_raw = _find_var(lev_ds_list, "gh", "z", "HGT")
         if hgt_raw is None:
             hgt_raw = _find_var_or_first(lev_ds_list, "gh")
-        h_agl_m[k] = hgt_raw.astype(np.float64) - sfc_hgt
-
-        # Pressure
-        p_Pa[k] = lev * 100.0
+        h_agl = hgt_raw.astype(np.float64) - sfc_hgt
 
         # Winds
         u_raw = _find_var(lev_ds_list, "u", "UGRD")
         if u_raw is None:
             u_raw = _find_var_or_first(lev_ds_list, "u")
-        u_3d[k] = u_raw.astype(np.float64)
+        u_lev = u_raw.astype(np.float64)
 
         v_raw = _find_var(lev_ds_list, "v", "VGRD")
         if v_raw is None:
             v_raw = _find_var_or_first(lev_ds_list, "v")
-        v_3d[k] = v_raw.astype(np.float64)
+        v_lev = v_raw.astype(np.float64)
+
+        return k, t_c, q, h_agl, lev * 100.0, u_lev, v_lev
+
+    with ThreadPoolExecutor(max_workers=_MAX_DOWNLOAD_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_level_same, k, lev): k
+            for k, lev in enumerate(levels)
+        }
+        for future in as_completed(futures):
+            k, t_c, q, h_agl, p_val, u_lev, v_lev = future.result()
+            t_C[k] = t_c
+            q_kgkg[k] = q
+            h_agl_m[k] = h_agl
+            p_Pa[k] = p_val
+            u_3d[k] = u_lev
+            v_3d[k] = v_lev
 
     logger.info("Pressure-level fields loaded  (%d levels)", nz)
 

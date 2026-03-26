@@ -131,6 +131,9 @@ def compute_lifted_index(data):
     Lifts a surface parcel to 500 hPa. Uses metrust lifted_index()
     per column (profile-based function).
 
+    Profiles are pre-built and pre-sorted once, then columns are
+    extracted via numpy slicing to minimise per-column overhead.
+
     Returns dict with key: lifted_index (2D [ny, nx])
     """
     ny, nx = data.ny, data.nx
@@ -142,20 +145,28 @@ def compute_lifted_index(data):
     td2_C = (data.td2m_K - 273.15).astype(np.float64)
     psfc_hPa = (data.psfc_Pa / 100.0).astype(np.float64)
 
-    # Build dewpoint 3D array from mixing ratio
+    # Build dewpoint 3D array from mixing ratio (vectorised per level)
     td_3d = np.empty_like(data.t_C)
     for k in range(nz):
-        p_hPa = levels[k] if np.isscalar(data.p_Pa[k].flat[0]) else data.p_Pa[k] / 100.0
-        if np.isscalar(p_hPa):
-            td_3d[k] = _dewpoint_from_q(data.q_kgkg[k], p_hPa)
-        else:
-            td_3d[k] = _dewpoint_from_q(data.q_kgkg[k], p_hPa)
+        td_3d[k] = _dewpoint_from_q(data.q_kgkg[k], levels[k])
+
+    # Pre-sort levels by pressure descending (surface first)
+    sort_idx = np.argsort(-levels)
+    levels_sorted = levels[sort_idx]
+    t_sorted = data.t_C[sort_idx].astype(np.float64)
+    td_sorted = td_3d[sort_idx].astype(np.float64)
+
+    # Pre-allocate profile arrays (nz+1: surface + upper levels)
+    # We need to figure out where the surface pressure inserts into the
+    # sorted levels for each column, but since psfc varies by column
+    # we handle it in the loop.  The key optimisation is avoiding the
+    # inner k-loop by using numpy column slicing.
 
     li_out = np.full((ny, nx), np.nan, dtype=np.float64)
 
     for j in range(ny):
         for i in range(nx):
-            # Build profile: surface + upper levels (surface first = highest pressure)
+            # Build profile: surface + pre-sorted upper levels
             p_col = np.empty(nz + 1, dtype=np.float64)
             t_col = np.empty(nz + 1, dtype=np.float64)
             td_col = np.empty(nz + 1, dtype=np.float64)
@@ -164,16 +175,15 @@ def compute_lifted_index(data):
             t_col[0] = t2_C[j, i]
             td_col[0] = td2_C[j, i]
 
-            for k in range(nz):
-                p_col[k + 1] = levels[k]
-                t_col[k + 1] = data.t_C[k, j, i]
-                td_col[k + 1] = td_3d[k, j, i]
+            p_col[1:] = levels_sorted
+            t_col[1:] = t_sorted[:, j, i]
+            td_col[1:] = td_sorted[:, j, i]
 
-            # Sort by pressure descending (surface first)
-            sort_idx = np.argsort(-p_col)
-            p_col = p_col[sort_idx]
-            t_col = t_col[sort_idx]
-            td_col = td_col[sort_idx]
+            # Re-sort with surface included (surface pressure varies)
+            resort = np.argsort(-p_col)
+            p_col = p_col[resort]
+            t_col = t_col[resort]
+            td_col = td_col[resort]
 
             try:
                 li_out[j, i] = _calc.lifted_index(p_col, t_col, td_col)

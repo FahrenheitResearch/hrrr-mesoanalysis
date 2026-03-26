@@ -136,33 +136,35 @@ def compute_dcape(data):
     Profiles are surface-first (decreasing pressure), with p in hPa,
     t and td in Celsius.
 
+    Profiles are pre-sorted once and columns extracted via numpy slicing
+    to minimise per-column Python overhead.
+
     Returns dict with key: dcape (2D [ny, nx] in J/kg)
     """
     ny, nx = data.ny, data.nx
     nz = len(data.levels_mb)
     levels = np.array(data.levels_mb, dtype=np.float64)
 
-    # Build dewpoint 3D array from mixing ratio
+    # Build dewpoint 3D array from mixing ratio (vectorised per level)
     td_3d = np.empty_like(data.t_C)
     for k in range(nz):
         td_3d[k] = _dewpoint_from_q(data.q_kgkg[k], levels[k])
+
+    # Pre-sort by pressure descending (surface first) once for all columns
+    sort_idx = np.argsort(-levels)
+    p_sorted = levels[sort_idx]
+    t_sorted = data.t_C[sort_idx].astype(np.float64)
+    td_sorted = td_3d[sort_idx].astype(np.float64)
 
     dcape_out = np.zeros((ny, nx), dtype=np.float64)
 
     for j in range(ny):
         for i in range(nx):
-            p_col = levels.copy()
-            t_col = np.array([data.t_C[k, j, i] for k in range(nz)], dtype=np.float64)
-            td_col = np.array([td_3d[k, j, i] for k in range(nz)], dtype=np.float64)
-
-            # Sort by pressure descending (surface first)
-            sort_idx = np.argsort(-p_col)
-            p_col = p_col[sort_idx]
-            t_col = t_col[sort_idx]
-            td_col = td_col[sort_idx]
+            t_col = t_sorted[:, j, i].copy()
+            td_col = td_sorted[:, j, i].copy()
 
             try:
-                dcape_out[j, i] = _calc.downdraft_cape(p_col, t_col, td_col)
+                dcape_out[j, i] = _calc.downdraft_cape(p_sorted, t_col, td_col)
             except Exception:
                 dcape_out[j, i] = 0.0
 
@@ -225,6 +227,9 @@ def compute_critical_angle(data, kinematic):
     Uses metrust grid_critical_angle(u_storm, v_storm, u_shear, v_shear, nx, ny).
     Needs Bunkers storm motion (right mover) and 0-1km shear components.
 
+    Profiles are pre-sorted by height ascending once, then columns are
+    extracted via numpy slicing.
+
     Returns dict with key: critical_angle (2D [ny, nx] in degrees)
     """
     ny, nx = data.ny, data.nx
@@ -237,20 +242,24 @@ def compute_critical_angle(data, kinematic):
         return {}
 
     # Compute 0-1km shear u/v components per column using bulk_shear
+    # Pre-sort by height ascending using a representative column (column 0,0)
+    # Since pressure levels are fixed, the height ordering is consistent
+    # across columns (higher pressure = lower height).
+    # Sort once based on the level ordering.
+    h_mean = np.mean(data.h_agl_m, axis=(1, 2))  # mean height per level
+    sort_idx = np.argsort(h_mean)
+    u_sorted = data.u[sort_idx].astype(np.float64)
+    v_sorted = data.v[sort_idx].astype(np.float64)
+    h_sorted = data.h_agl_m[sort_idx].astype(np.float64)
+
     u_shear_01 = np.zeros((ny, nx), dtype=np.float64)
     v_shear_01 = np.zeros((ny, nx), dtype=np.float64)
 
     for j in range(ny):
         for i in range(nx):
-            u_col = np.array([data.u[k, j, i] for k in range(nz)], dtype=np.float64)
-            v_col = np.array([data.v[k, j, i] for k in range(nz)], dtype=np.float64)
-            h_col = np.array([data.h_agl_m[k, j, i] for k in range(nz)], dtype=np.float64)
-
-            # Sort by height ascending
-            sort_idx = np.argsort(h_col)
-            u_col = u_col[sort_idx]
-            v_col = v_col[sort_idx]
-            h_col = h_col[sort_idx]
+            u_col = u_sorted[:, j, i].copy()
+            v_col = v_sorted[:, j, i].copy()
+            h_col = h_sorted[:, j, i].copy()
 
             try:
                 us, vs = _calc.bulk_shear(u_col, v_col, h_col, 0.0, 1000.0)

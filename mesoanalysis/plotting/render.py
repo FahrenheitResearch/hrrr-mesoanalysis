@@ -1,10 +1,12 @@
+import os
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import cartopy.crs as ccrs
+from multiprocessing import Pool
 from pathlib import Path
 
-from .maps import make_map
 from .styles import STYLES
 
 
@@ -63,6 +65,92 @@ def _build_norm_and_cmap(style):
     return None, None, None
 
 
+def _render_one(args):
+    """Render a single parameter map in a subprocess.
+
+    matplotlib is NOT thread-safe, so this must run in a separate process
+    via multiprocessing.Pool.  Each subprocess initialises its own Agg
+    backend.
+    """
+    name, style, lon, lat, data, analysis_time, output_dir, model_name = args
+
+    # Each subprocess needs its own backend
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    import matplotlib.colors as _mcolors
+
+    # Re-import cartopy in subprocess
+    import cartopy.crs as _ccrs
+    import cartopy.feature as _cfeature
+
+    # ---- build norm/cmap locally (same logic as _build_norm_and_cmap) ----
+    norm, cmap, levels = None, None, None
+
+    if style.get("nws_radar"):
+        cmap = _mcolors.ListedColormap(_NWS_REFC_COLORS)
+        norm = _mcolors.BoundaryNorm(_NWS_REFC_LEVELS, cmap.N)
+        levels = _NWS_REFC_LEVELS
+    elif "cmap_colors" in style:
+        cmap = _mcolors.ListedColormap(style["cmap_colors"])
+        levels = style["levels"]
+        norm = _mcolors.BoundaryNorm(levels, cmap.N)
+    elif "levels" in style:
+        levels = style["levels"]
+        cmap = _plt.get_cmap(style["cmap"])
+        norm = _mcolors.BoundaryNorm(levels, cmap.N)
+    elif "levels_range" in style:
+        lo, hi, step = style["levels_range"]
+        levels = np.arange(lo, hi + step / 2, step)
+        cmap = _plt.get_cmap(style["cmap"]) if style.get("cmap") else None
+        norm = None if cmap is None else _mcolors.BoundaryNorm(levels, cmap.N)
+
+    # ---- create map ----
+    proj = _ccrs.LambertConformal(central_longitude=-97.5)
+    fig, ax = _plt.subplots(figsize=(12, 8), subplot_kw={"projection": proj})
+    extent = [-125, -66, 24, 50]
+    ax.set_extent(extent, crs=_ccrs.PlateCarree())
+    ax.add_feature(_cfeature.STATES, linewidth=0.5)
+    ax.add_feature(_cfeature.COASTLINE)
+    ax.add_feature(_cfeature.BORDERS)
+
+    transform = _ccrs.PlateCarree()
+    contour_only = style.get("contour_only", False)
+    extend = style.get("extend", "neither")
+
+    if contour_only:
+        cs = ax.contour(
+            lon, lat, data,
+            levels=levels,
+            colors="k",
+            linewidths=1.0,
+            transform=transform,
+        )
+        ax.clabel(cs, inline=True, fontsize=8, fmt="%g")
+    else:
+        cf = ax.contourf(
+            lon, lat, data,
+            levels=levels,
+            cmap=cmap,
+            norm=norm,
+            extend=extend,
+            transform=transform,
+        )
+        _plt.colorbar(cf, ax=ax, orientation="horizontal", pad=0.04, shrink=0.7,
+                       label=style["label"])
+
+    label = style["label"]
+    time_str = analysis_time.strftime("%Y-%m-%d %H:%M UTC")
+    ax.set_title(
+        f"{model_name.upper()} + Sfc Obs Analysis | {label}\n{time_str}",
+        fontsize=11,
+    )
+
+    output_path = Path(output_dir) / f"{name}.png"
+    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+    _plt.close(fig)
+    return str(output_path)
+
+
 def render_field(lon, lat, data, name, analysis_time, output_dir, model_name="HRRR"):
     """Render a single parameter field to PNG.
 
@@ -86,6 +174,8 @@ def render_field(lon, lat, data, name, analysis_time, output_dir, model_name="HR
         return
 
     norm, cmap, levels = _build_norm_and_cmap(style)
+
+    from .maps import make_map
     fig, ax = make_map()
     transform = ccrs.PlateCarree()
 
@@ -132,6 +222,9 @@ def render_field(lon, lat, data, name, analysis_time, output_dir, model_name="HR
 def render_all(lon, lat, params_dict, analysis_time, output_dir, model_name="HRRR"):
     """Render all parameter fields that have a matching style definition.
 
+    Uses multiprocessing.Pool to render maps in parallel across CPU cores.
+    matplotlib is NOT thread-safe, so each render runs in a separate process.
+
     Parameters
     ----------
     lon, lat : 2-D arrays
@@ -147,7 +240,22 @@ def render_all(lon, lat, params_dict, analysis_time, output_dir, model_name="HRR
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build list of (name, style, lon, lat, data, ...) tuples for pool.map
+    render_args = []
     for name, data in params_dict.items():
         if name in STYLES:
-            render_field(lon, lat, data, name, analysis_time, output_dir,
-                         model_name=model_name)
+            render_args.append((
+                name, STYLES[name], lon, lat, data,
+                analysis_time, str(output_dir), model_name,
+            ))
+
+    if not render_args:
+        return
+
+    n_workers = min(8, os.cpu_count() or 4, len(render_args))
+    print(f"  rendering {len(render_args)} maps with {n_workers} workers ...")
+
+    with Pool(processes=n_workers) as pool:
+        for output_path in pool.imap_unordered(_render_one, render_args):
+            print(f"  saved {output_path}")
